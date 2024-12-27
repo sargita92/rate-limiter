@@ -11,7 +11,7 @@ const (
 	xForwarded   = "X-Forwarded-For"
 
 	ipNotFound        = "ip not found"
-	rateLimitExceeded = "rate limit exceeded"
+	rateLimitExceeded = "you have reached the maximum number of requests or actions allowed within a certain time frame"
 )
 
 type RateLimiter struct {
@@ -38,8 +38,7 @@ func (r *RateLimiter) Do(req *http.Request) error {
 
 	limit := r.defineToken(req)
 
-	err := r.checkRateLimit(ip, limit)
-	if err != nil {
+	if err := r.checkRateLimit(ip, limit); err != nil {
 		return err
 	}
 
@@ -58,6 +57,19 @@ func (r *RateLimiter) defineIp(req *http.Request) string {
 	}
 
 	return IPAddress
+}
+
+func (r *RateLimiter) checkIsBlocked(ip string) error {
+	isBlocked, err := r.rateLimiterRepository.FindIsBlocked(ip)
+	if err != nil {
+		return err
+	}
+
+	if isBlocked {
+		return errors.New(rateLimitExceeded)
+	}
+
+	return nil
 }
 
 func (r *RateLimiter) defineToken(req *http.Request) int {
@@ -88,7 +100,11 @@ func (r *RateLimiter) checkRateLimit(ip string, limit int) error {
 		return err
 	}
 
-	if amount >= limit {
+	if amount > limit {
+		if err := r.rateLimiterRepository.UpdateIsBlocked(ip, true); err != nil {
+			return err
+		}
+
 		return errors.New(rateLimitExceeded)
 	}
 
