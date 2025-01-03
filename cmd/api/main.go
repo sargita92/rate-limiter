@@ -9,5 +9,11 @@ func main() {
 		writer.WriteHeader(http.StatusOK)
 	})
 
-	http.ListenAndServe(":8080", api)
+	http.ListenAndServe(":8080", rateLimiterMiddleware(api))
+}
+
+func rateLimiterMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+	})
 }
