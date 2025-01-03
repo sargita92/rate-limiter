@@ -3,6 +3,7 @@ package rate_limiter
 import (
 	"errors"
 	"net/http"
+	"time"
 )
 
 const (
@@ -50,11 +51,13 @@ func (r *RateLimiter) Do(req *http.Request) error {
 		return err
 	}
 
-	if err := r.checkIsTokenBlocked(token); err != nil {
+	blockTimeWindow := r.defineBlockTimeWindow(token)
+
+	if err := r.checkIsTokenBlocked(token, blockTimeWindow); err != nil {
 		return err
 	}
 
-	if err := r.checkIsIpBlocked(ip); err != nil {
+	if err := r.checkIsIpBlocked(ip, blockTimeWindow); err != nil {
 		return err
 	}
 
@@ -104,12 +107,12 @@ func (r *RateLimiter) saveTry(ip string, token string) error {
 	return r.rateLimiterRepository.SaveTry(ip, token)
 }
 
-func (r *RateLimiter) checkIsTokenBlocked(token string) error {
+func (r *RateLimiter) checkIsTokenBlocked(token string, blockTimeWindow time.Time) error {
 	if token == "" {
 		return nil
 	}
 
-	blocked, err := r.rateLimiterRepository.IsBlockedByToken(token)
+	blocked, err := r.rateLimiterRepository.IsBlockedByToken(token, blockTimeWindow)
 	if err != nil {
 		return err
 	}
@@ -121,12 +124,33 @@ func (r *RateLimiter) checkIsTokenBlocked(token string) error {
 	return nil
 }
 
-func (r *RateLimiter) checkIsIpBlocked(ip string) error {
+func (r *RateLimiter) defineBlockTimeWindow(token string) time.Time {
+	if token == "" {
+		return calculateBlockTimeWindow(r.BlockDuration)
+	}
+
+	tokenDuration, err := r.rateLimiterRepository.FindTokenBlockDuration(token)
+	if err != nil {
+		return calculateBlockTimeWindow(r.BlockDuration)
+	}
+
+	if tokenDuration == 0 {
+		return calculateBlockTimeWindow(r.BlockDuration)
+	}
+
+	return calculateBlockTimeWindow(tokenDuration)
+}
+
+func calculateBlockTimeWindow(durationInSeconds int) time.Time {
+	return time.Now().Add(-time.Duration(durationInSeconds) * time.Second)
+}
+
+func (r *RateLimiter) checkIsIpBlocked(ip string, blockTimeWindow time.Time) error {
 	if ip == "" {
 		return errors.New(ipNotFound)
 	}
 
-	blocked, err := r.rateLimiterRepository.IsBlockedByIp(ip)
+	blocked, err := r.rateLimiterRepository.IsBlockedByIp(ip, blockTimeWindow)
 	if err != nil {
 		return err
 	}
