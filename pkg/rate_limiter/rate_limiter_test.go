@@ -2,6 +2,7 @@ package rate_limiter
 
 import (
 	"errors"
+	_ "errors"
 	"github.com/stretchr/testify/assert"
 	"net/http"
 	"testing"
@@ -11,23 +12,208 @@ const (
 	defaultIp = "1.1.1.1"
 	secondIp  = "2.2.2.2"
 
-	initialIpQuantity     = 0
-	initialTokenLimit     = 1
-	defaultLimit          = 3
-	defaultTokenLimit     = 5
-	defaultTimeDuration   = 1
-	defaultToken          = "test"
-	defaultRequestMethod  = "GET"
-	defaultUrl            = "/"
-	FindLimitByToken      = "FindLimitByToken"
-	CountByIpInLastSecond = "CountByIpInLastSecond"
-	FindIsTokenBlocked    = "FindIsTokenBlocked"
-	FindIsIpBlocked       = "FindIsIpBlocked"
-	UpdateIsBlocked       = "UpdateIsBlocked"
-	DefaultErrorMessage   = "error"
-	ExpectedErrorMessage  = "Expected error, got nil"
-	ExpectedNillMessage   = "Expected nil, got %v"
+	initialTryCount      = 0
+	defaultLimit         = 3
+	defaultTokenLimit    = 5
+	defaultTimeDuration  = 1
+	defaultToken         = "test"
+	defaultRequestMethod = "GET"
+	defaultUrl           = "/"
+	DefaultErrorMessage  = "error"
+	ExpectedErrorMessage = "Expected error, got nil"
+	ExpectedNillMessage  = "Expected nil, got %v"
 )
+
+func startRateLimite() (*RateLimiter, *RateLimiterRepositoryMock) {
+	RateLimiterRepository := NewRateLimiterRepositoryMock()
+
+	return NewRateLimiter(
+		RateLimiterRepository,
+		defaultLimit,
+		defaultTimeDuration,
+	), RateLimiterRepository
+}
+
+func TestRateLimiterDo(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("SaveTry", defaultIp, defaultToken).Return(initialTryCount, nil)
+	repository.On("TokenExists", defaultToken).Return(true, nil)
+	repository.On("IsBlockedByIp", defaultIp).Return(false, nil)
+	repository.On("IsBlockedByToken", defaultToken).Return(false, nil)
+
+	repository.On("FindLimitByToken", defaultToken).Return(defaultTokenLimit, nil)
+	repository.On("FindTriesByTokenInLastSecond", defaultToken).Return(initialTryCount, nil)
+	repository.On("BlockToken", defaultToken).Return(nil)
+
+	repository.On("FindLimitByIp", defaultIp).Return(defaultLimit, nil)
+	repository.On("FindTriesByIpInLastSecond", defaultIp).Return(initialTryCount, nil)
+	repository.On("BlockIp", defaultIp).Return(nil)
+
+	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
+	assert.Nil(t, err, ExpectedNillMessage, err)
+
+	req.Header.Set(xRealIp, defaultIp)
+	req.Header.Set(apiKeyHeader, defaultToken)
+
+	err = rateLimiter.Do(req)
+	assert.Nil(t, err, ExpectedNillMessage, err)
+}
+
+func TestRateLimiterDoWithoutToken(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("SaveTry", defaultIp, "").Return(initialTryCount, nil)
+	repository.On("TokenExists", "").Return(true, nil)
+	repository.On("IsBlockedByIp", defaultIp).Return(false, nil)
+	repository.On("IsBlockedByToken", "").Return(false, nil)
+
+	repository.On("FindLimitByIp", defaultIp).Return(defaultLimit, nil)
+	repository.On("FindTriesByIpInLastSecond", defaultIp).Return(initialTryCount, nil)
+	repository.On("BlockIp", defaultIp).Return(nil)
+
+	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
+	assert.Nil(t, err, ExpectedNillMessage, err)
+
+	req.Header.Set(xRealIp, defaultIp)
+	req.Header.Set(apiKeyHeader, "")
+
+	err = rateLimiter.Do(req)
+	assert.Nil(t, err, ExpectedNillMessage, err)
+}
+
+func TestRateLimiterTokenErrorSaveTry(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("SaveTry", defaultIp, defaultToken).Return(initialTryCount, nil)
+	repository.On("TokenExists", defaultToken).Return(false, nil)
+
+	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
+	assert.Nil(t, err, ExpectedNillMessage, err)
+
+	req.Header.Set(xRealIp, defaultIp)
+	req.Header.Set(apiKeyHeader, defaultToken)
+
+	err = rateLimiter.Do(req)
+	assert.Error(t, err, ExpectedErrorMessage, err)
+}
+
+func TestRateLimiterTokenErrorSaveTryError(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("SaveTry", defaultIp, defaultToken).Return(initialTryCount, errors.New(DefaultErrorMessage))
+	repository.On("TokenExists", defaultToken).Return(false, nil)
+
+	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
+	assert.Nil(t, err, ExpectedNillMessage, err)
+
+	req.Header.Set(xRealIp, defaultIp)
+	req.Header.Set(apiKeyHeader, defaultToken)
+
+	err = rateLimiter.Do(req)
+	assert.Error(t, err, ExpectedErrorMessage, err)
+}
+
+func TestDoSaveTryError(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	err := errors.New(DefaultErrorMessage)
+
+	repository.On("SaveTry", defaultIp, defaultToken).Return(initialTryCount, err)
+	repository.On("TokenExists", defaultToken).Return(true, nil)
+
+	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
+	assert.Nil(t, err, ExpectedNillMessage, err)
+
+	req.Header.Set(xRealIp, defaultIp)
+	req.Header.Set(apiKeyHeader, defaultToken)
+
+	err = rateLimiter.Do(req)
+	assert.Error(t, err, ExpectedErrorMessage, err)
+}
+
+func TestDoTokenIsBlocked(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("SaveTry", defaultIp, defaultToken).Return(initialTryCount, nil)
+	repository.On("TokenExists", defaultToken).Return(true, nil)
+	repository.On("IsBlockedByIp", defaultIp).Return(true, nil)
+	repository.On("IsBlockedByToken", defaultToken).Return(true, nil)
+
+	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
+	assert.Nil(t, err, ExpectedNillMessage, err)
+
+	req.Header.Set(xRealIp, defaultIp)
+	req.Header.Set(apiKeyHeader, defaultToken)
+
+	err = rateLimiter.Do(req)
+	assert.Error(t, err, ExpectedErrorMessage, err)
+}
+
+func TestDoIpIsBlocked(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("SaveTry", defaultIp, defaultToken).Return(initialTryCount, nil)
+	repository.On("TokenExists", defaultToken).Return(true, nil)
+	repository.On("IsBlockedByIp", defaultIp).Return(true, nil)
+	repository.On("IsBlockedByToken", defaultToken).Return(false, nil)
+
+	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
+	assert.Nil(t, err, ExpectedNillMessage, err)
+
+	req.Header.Set(xRealIp, defaultIp)
+	req.Header.Set(apiKeyHeader, defaultToken)
+
+	err = rateLimiter.Do(req)
+	assert.Error(t, err, ExpectedErrorMessage, err)
+}
+
+func TestRateLimiterDoTokenTriesExceeded(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("SaveTry", defaultIp, defaultToken).Return(initialTryCount, nil)
+	repository.On("TokenExists", defaultToken).Return(true, nil)
+	repository.On("IsBlockedByIp", defaultIp).Return(false, nil)
+	repository.On("IsBlockedByToken", defaultToken).Return(false, nil)
+
+	repository.On("FindLimitByToken", defaultToken).Return(defaultTokenLimit, nil)
+	repository.On("FindTriesByTokenInLastSecond", defaultToken).Return(defaultTokenLimit, nil)
+	repository.On("BlockToken", defaultToken).Return(nil)
+
+	repository.On("FindLimitByIp", defaultIp).Return(defaultLimit, nil)
+	repository.On("FindTriesByIpInLastSecond", defaultIp).Return(initialTryCount, nil)
+	repository.On("BlockIp", defaultIp).Return(nil)
+
+	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
+	assert.Nil(t, err, ExpectedNillMessage, err)
+
+	req.Header.Set(xRealIp, defaultIp)
+	req.Header.Set(apiKeyHeader, defaultToken)
+
+	err = rateLimiter.Do(req)
+	assert.Error(t, err, ExpectedErrorMessage, err)
+}
+
+func TestRateLimiterDoIpTriesExceeded(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("SaveTry", defaultIp, "").Return(initialTryCount, nil)
+	repository.On("TokenExists", "").Return(true, nil)
+	repository.On("IsBlockedByIp", defaultIp).Return(false, nil)
+	repository.On("IsBlockedByToken", "").Return(false, nil)
+
+	repository.On("FindLimitByIp", defaultIp).Return(defaultLimit, nil)
+	repository.On("FindTriesByIpInLastSecond", defaultIp).Return(defaultLimit, nil)
+	repository.On("BlockIp", defaultIp).Return(nil)
+
+	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
+	assert.Nil(t, err, ExpectedNillMessage, err)
+
+	req.Header.Set(xRealIp, defaultIp)
+
+	err = rateLimiter.Do(req)
+	assert.Error(t, err, ExpectedErrorMessage, err)
+}
 
 func TestDefineIp(t *testing.T) {
 	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
@@ -51,326 +237,270 @@ func TestEmptyDefineIp(t *testing.T) {
 	assert.Equal(t, "", (&RateLimiter{}).defineIp(req))
 }
 
-func TestCheckTokenNotBlocked(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(FindIsTokenBlocked, defaultToken).Return(false, nil, nil)
-
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-	err := rateLimiter.checkIsTokenBlocked(defaultToken)
-	assert.Nil(t, err, ExpectedNillMessage, err)
-}
-
-func TestCheckIsTokenBlockedError(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(FindIsTokenBlocked, defaultToken).Return(false, nil, errors.New(DefaultErrorMessage))
-
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-	err := rateLimiter.checkIsTokenBlocked(defaultToken)
-	assert.Error(t, err, ExpectedErrorMessage, err)
-}
-
-func TestCheckIsTokenBlocked(t *testing.T) {
-	timeDuration := calculateBlockTimeDuration(defaultTimeDuration)
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(FindIsTokenBlocked, defaultToken).Return(true, timeDuration, nil)
-
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-	err := rateLimiter.checkIsTokenBlocked(defaultToken)
-	assert.Error(t, err, ExpectedErrorMessage, err)
-}
-
-func TestCheckIpNotBlocked(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(FindIsIpBlocked, defaultIp).Return(false, nil, nil)
-
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-	err := rateLimiter.checkIsIpBlocked(defaultIp)
-	assert.Nil(t, rateLimiter.checkIsIpBlocked(defaultIp), ExpectedNillMessage, err)
-}
-
-func TestCheckIsIpBlockedError(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(FindIsIpBlocked, defaultIp).Return(false, nil, errors.New(DefaultErrorMessage))
-
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-	err := rateLimiter.checkIsIpBlocked(defaultIp)
-	assert.Error(t, err, ExpectedErrorMessage, err)
-}
-
-func TestCheckIsIpBlocked(t *testing.T) {
-	timeDuration := calculateBlockTimeDuration(defaultTimeDuration)
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(FindIsIpBlocked, defaultIp).Return(true, timeDuration, nil)
-
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-	err := rateLimiter.checkIsIpBlocked(defaultIp)
-	assert.Error(t, err, ExpectedErrorMessage, err)
-}
-
 func TestDefineToken(t *testing.T) {
 	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
 	assert.Nil(t, err)
 
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(FindLimitByToken, defaultToken).Return(defaultTokenLimit, nil)
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-
 	req.Header.Set(apiKeyHeader, defaultToken)
-	assert.Equal(t, defaultTokenLimit, rateLimiter.defineTokenLimit(req))
-
-	req.Header.Del(apiKeyHeader)
-	assert.Equal(t, defaultLimit, rateLimiter.defineTokenLimit(req))
+	assert.Equal(t, defaultToken, (&RateLimiter{}).defineToken(req))
 }
 
-func TestTokenNotFound(t *testing.T) {
+func TestEmptyDefineToken(t *testing.T) {
 	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
 	assert.Nil(t, err)
 
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(FindLimitByToken, defaultToken).Return(initialIpQuantity, nil)
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-
-	req.Header.Set(apiKeyHeader, defaultToken)
-	assert.Equal(t, defaultLimit, rateLimiter.defineTokenLimit(req))
+	assert.Equal(t, "", (&RateLimiter{}).defineToken(req))
 }
 
-func TestDefineTokenError(t *testing.T) {
-	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
-	assert.Nil(t, err)
+func TestCheckToken(t *testing.T) {
+	repository := NewRateLimiterRepositoryMock()
 
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	err = errors.New(DefaultErrorMessage)
-	rateLimiterRepository.On(FindLimitByToken, defaultToken).Return(initialTokenLimit, err)
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
+	repository.On("TokenExists", defaultToken).Return(true, nil)
 
-	req.Header.Set(apiKeyHeader, defaultToken)
-	assert.Equal(t, defaultLimit, rateLimiter.defineTokenLimit(req))
+	rateLimiter := NewRateLimiter(repository, defaultTokenLimit, defaultTimeDuration)
+
+	assert.Nil(t, rateLimiter.checkTokenExists(defaultToken), ExpectedNillMessage)
 }
 
-func TestCheckRateLimiter(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(CountByIpInLastSecond, defaultIp).Return(initialIpQuantity, nil)
+func TestCheckTokenNotFound(t *testing.T) {
+	repository := NewRateLimiterRepositoryMock()
 
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
+	repository.On("TokenExists", defaultToken).Return(false, nil)
 
-	err := rateLimiter.checkRateLimit(defaultIp, defaultToken, 1)
+	rateLimiter := NewRateLimiter(repository, defaultTokenLimit, defaultTimeDuration)
+
+	assert.Error(t, rateLimiter.checkTokenExists(defaultToken), ExpectedErrorMessage)
+}
+
+func TestCheckTokenError(t *testing.T) {
+	repository := NewRateLimiterRepositoryMock()
+
+	repository.On("TokenExists", defaultToken).Return(false, errors.New(DefaultErrorMessage))
+
+	rateLimiter := NewRateLimiter(repository, defaultTokenLimit, defaultTimeDuration)
+
+	assert.Error(t, rateLimiter.checkTokenExists(defaultToken), ExpectedErrorMessage)
+}
+
+func TestEmptyCheckToken(t *testing.T) {
+	assert.Nil(t, (&RateLimiter{}).checkTokenExists(""))
+}
+
+func TestSaveTry(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("SaveTry", defaultIp, defaultToken).Return(initialTryCount, nil)
+
+	err := rateLimiter.saveTry(defaultIp, defaultToken)
 	assert.Nil(t, err, ExpectedNillMessage, err)
 }
 
-func TestCheckRateLimiterShouldExceedLimit(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(CountByIpInLastSecond, defaultIp).Return(defaultLimit, nil)
-	rateLimiterRepository.On(UpdateIsBlocked, defaultIp, defaultToken, true).Return(nil)
+func TestCheckTokenIsBlocked(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
 
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
+	repository.On("IsBlockedByToken", defaultToken).Return(false, nil)
 
-	err := rateLimiter.checkRateLimit(defaultIp, defaultToken, defaultLimit)
-	assert.Error(t, err, ExpectedErrorMessage)
+	assert.Nil(t, rateLimiter.checkIsTokenBlocked(defaultToken), ExpectedNillMessage)
 }
 
-func TestCheckRateLimiterUpdateIsBlockedError(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(CountByIpInLastSecond, defaultIp).Return(defaultLimit, nil)
-	expectedError := errors.New(DefaultErrorMessage)
-	rateLimiterRepository.On(UpdateIsBlocked, defaultIp, defaultToken, true).Return(expectedError)
-
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-
-	err := rateLimiter.checkRateLimit(defaultIp, defaultToken, defaultLimit)
-	assert.Error(t, err, ExpectedErrorMessage)
+func TestCheckEmptyTokenIsBlocked(t *testing.T) {
+	assert.Nil(t, (&RateLimiter{}).checkIsTokenBlocked(""))
 }
 
-func TestCheckRateLimiterError(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	expectedError := errors.New(DefaultErrorMessage)
-	rateLimiterRepository.On(CountByIpInLastSecond, defaultIp).Return(defaultLimit, expectedError)
+func TestCheckTokenIsBlockedError(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
 
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
+	repository.On("IsBlockedByToken", defaultToken).Return(false, errors.New(DefaultErrorMessage))
 
-	err := rateLimiter.checkRateLimit(defaultIp, defaultToken, defaultLimit)
-	assert.Errorf(t, err, expectedError.Error(), ExpectedErrorMessage, err)
+	assert.Error(t, rateLimiter.checkIsTokenBlocked(defaultToken), ExpectedErrorMessage)
 }
 
-func TestEmptyIpRateLimiter(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(CountByIpInLastSecond, defaultIp).Return(initialIpQuantity, nil)
-	rateLimiterRepository.On(FindLimitByToken, defaultIp).Return(initialTokenLimit, nil)
-	rateLimiterRepository.On(FindIsIpBlocked, defaultIp).Return(false, nil, nil)
+func TestCheckTokenIsBlockedWhenBlocked(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
 
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
-	assert.Nil(t, err)
+	repository.On("IsBlockedByToken", defaultToken).Return(true, nil)
 
-	err = rateLimiter.Do(req)
-	assert.Error(t, err, ExpectedErrorMessage)
+	assert.Error(t, rateLimiter.checkIsTokenBlocked(defaultToken), ExpectedErrorMessage)
 }
 
-func TestRateLimiter(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(CountByIpInLastSecond, defaultIp).Return(initialIpQuantity, nil)
-	rateLimiterRepository.On(FindLimitByToken, defaultToken).Return(initialTokenLimit, nil)
-	rateLimiterRepository.On(FindIsTokenBlocked, defaultToken).Return(false, nil, nil)
-	rateLimiterRepository.On(FindIsIpBlocked, defaultIp).Return(false, nil, nil)
+func TestCheckIpIsBlocked(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
 
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
-	assert.Nil(t, err)
+	repository.On("IsBlockedByIp", defaultToken).Return(false, nil)
 
-	req.Header.Set(xRealIp, defaultIp)
-	req.Header.Set(apiKeyHeader, defaultToken)
-
-	err = rateLimiter.Do(req)
-	assert.Nil(t, err, ExpectedNillMessage, err)
+	assert.Nil(t, rateLimiter.checkIsIpBlocked(defaultToken), ExpectedNillMessage)
 }
 
-func TestRateLimiterExceed(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(CountByIpInLastSecond, defaultIp).Return(defaultLimit, nil)
-	rateLimiterRepository.On(FindLimitByToken, defaultToken).Return(defaultLimit, nil)
-	rateLimiterRepository.On(FindIsTokenBlocked, defaultToken).Return(false, nil, nil)
-	rateLimiterRepository.On(FindIsIpBlocked, defaultIp).Return(false, nil, nil)
-	rateLimiterRepository.On(UpdateIsBlocked, defaultIp, defaultToken, true).Return(nil)
-
-	rateLimiter := NewRateLimiter(rateLimiterRepository, 0, defaultTimeDuration)
-	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
-	assert.Nil(t, err)
-
-	req.Header.Set(xRealIp, defaultIp)
-	req.Header.Set(apiKeyHeader, defaultToken)
-
-	err = rateLimiter.Do(req)
-	assert.Error(t, err, ExpectedNillMessage, err)
+func TestCheckEmptyIpIsBlocked(t *testing.T) {
+	assert.Error(t, (&RateLimiter{}).checkIsIpBlocked(""), ExpectedErrorMessage)
 }
 
-func TestRateLimitePersistanceByToken(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(CountByIpInLastSecond, defaultIp).Return(initialIpQuantity, nil)
-	rateLimiterRepository.On(FindLimitByToken, defaultToken).Return(defaultTokenLimit, nil)
-	rateLimiterRepository.On(FindIsTokenBlocked, defaultToken).Return(false, nil, nil)
-	rateLimiterRepository.On(FindIsIpBlocked, defaultIp).Return(false, nil, nil)
-	rateLimiterRepository.On(UpdateIsBlocked, defaultIp, defaultToken, true).Return(nil)
+func TestCheckIpIsBlockedError(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
 
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
-	assert.Nil(t, err)
+	repository.On("IsBlockedByIp", defaultToken).Return(false, errors.New(DefaultErrorMessage))
 
-	req.Header.Set(xRealIp, defaultIp)
-	req.Header.Set(apiKeyHeader, defaultToken)
-
-	for range defaultTokenLimit {
-		err = rateLimiter.Do(req)
-		assert.Nil(t, err, ExpectedNillMessage, err)
-	}
-
-	err = rateLimiter.Do(req)
-	assert.Error(t, err, ExpectedErrorMessage)
+	assert.Error(t, rateLimiter.checkIsIpBlocked(defaultToken), ExpectedErrorMessage)
 }
 
-func TestRateLimitePersistance(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(CountByIpInLastSecond, defaultIp).Return(initialIpQuantity, nil)
-	rateLimiterRepository.On(FindLimitByToken, defaultToken).Return(defaultTokenLimit, nil)
-	rateLimiterRepository.On(FindIsTokenBlocked, "").Return(false, nil, nil)
-	rateLimiterRepository.On(FindIsIpBlocked, defaultIp).Return(false, nil, nil)
-	rateLimiterRepository.On(UpdateIsBlocked, defaultIp, "", true).Return(nil)
+func TestCheckIpIsBlockedWhenBlocked(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
 
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
-	assert.Nil(t, err)
+	repository.On("IsBlockedByIp", defaultToken).Return(true, nil)
 
-	req.Header.Set(xRealIp, defaultIp)
-
-	for range defaultLimit {
-		err = rateLimiter.Do(req)
-		assert.Nil(t, err, ExpectedNillMessage, err)
-	}
-
-	err = rateLimiter.Do(req)
-	assert.Error(t, err, ExpectedErrorMessage)
+	assert.Error(t, rateLimiter.checkIsIpBlocked(defaultToken), ExpectedErrorMessage)
 }
 
-func TestRateLimiterIsIpBlocked(t *testing.T) {
-	timeDuration := calculateBlockTimeDuration(defaultTimeDuration)
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(CountByIpInLastSecond, defaultIp).Return(initialIpQuantity, nil)
-	rateLimiterRepository.On(FindLimitByToken, defaultToken).Return(initialTokenLimit, nil)
-	rateLimiterRepository.On(FindIsTokenBlocked, "").Return(false, nil, nil)
-	rateLimiterRepository.On(FindIsIpBlocked, defaultIp).Return(true, timeDuration, nil)
+func TestBlockedTryByToken(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
 
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
-	assert.Nil(t, err)
+	repository.On("FindLimitByToken", defaultToken).Return(defaultTokenLimit, nil)
+	repository.On("FindTriesByTokenInLastSecond", defaultToken).Return(defaultTokenLimit, nil)
+	repository.On("BlockToken", defaultToken).Return(nil)
 
-	req.Header.Set(xRealIp, defaultIp)
-	req.Header.Set(apiKeyHeader, "")
-
-	err = rateLimiter.Do(req)
-	assert.Error(t, err, ExpectedErrorMessage)
+	assert.Error(t, rateLimiter.blockedTry(defaultIp, defaultToken), ExpectedErrorMessage)
 }
 
-func TestRateLimiterIsTokenBlocked(t *testing.T) {
-	timeDuration := calculateBlockTimeDuration(defaultTimeDuration)
+func TestBlockedTryByIp(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
 
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(CountByIpInLastSecond, defaultIp).Return(initialIpQuantity, nil)
-	rateLimiterRepository.On(FindLimitByToken, defaultToken).Return(initialTokenLimit, nil)
-	rateLimiterRepository.On(FindIsTokenBlocked, defaultToken).Return(true, timeDuration, nil)
-	rateLimiterRepository.On(FindIsIpBlocked, defaultIp).Return(false, nil, nil)
+	repository.On("FindLimitByIp", defaultIp).Return(defaultLimit, nil)
+	repository.On("FindTriesByIpInLastSecond", defaultIp).Return(defaultLimit, nil)
+	repository.On("BlockIp", defaultIp).Return(nil)
 
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
-	req, err := http.NewRequest(defaultRequestMethod, defaultUrl, nil)
-	assert.Nil(t, err)
-
-	req.Header.Set(xRealIp, defaultIp)
-	req.Header.Set(apiKeyHeader, defaultToken)
-
-	err = rateLimiter.Do(req)
-	assert.Error(t, err, ExpectedErrorMessage)
+	assert.Error(t, rateLimiter.blockedTry(defaultIp, ""), ExpectedErrorMessage)
 }
 
-func TestShouldNotUnblock(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(UpdateIsBlocked, defaultIp, defaultToken, false).Return(nil)
+func TestDoesntBlockTryWithToken(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
 
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
+	repository.On("FindLimitByToken", defaultToken).Return(defaultTokenLimit, nil)
+	repository.On("FindTriesByTokenInLastSecond", defaultToken).Return(initialTryCount, nil)
+	repository.On("BlockToken", defaultToken).Return(nil)
 
-	timeDuration := calculateBlockTimeDuration(defaultTimeDuration)
+	repository.On("FindLimitByIp", defaultIp).Return(defaultLimit, nil)
+	repository.On("FindTriesByIpInLastSecond", defaultIp).Return(initialTryCount, nil)
+	repository.On("BlockIp", defaultIp).Return(nil)
 
-	err := rateLimiter.shouldUnblock(defaultIp, defaultToken, &timeDuration)
-	assert.Error(t, err, ExpectedErrorMessage)
+	assert.Nil(t, rateLimiter.blockedTry(defaultIp, defaultToken), ExpectedNillMessage)
 }
 
-func TestShouldUnblock(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(UpdateIsBlocked, "", defaultToken, false).Return(nil)
+func TestDoesntBlockTryWithEmptyToken(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
 
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
+	repository.On("FindLimitByIp", defaultIp).Return(defaultLimit, nil)
+	repository.On("FindTriesByIpInLastSecond", defaultIp).Return(initialTryCount, nil)
+	repository.On("BlockIp", defaultIp).Return(nil)
 
-	timeDuration := calculateBlockTimeDuration(-defaultTimeDuration)
-
-	err := rateLimiter.shouldUnblock(defaultIp, defaultToken, &timeDuration)
-	assert.Nil(t, err, ExpectedNillMessage)
+	assert.Nil(t, rateLimiter.blockedTry(defaultIp, ""), ExpectedNillMessage)
 }
 
-func TestShouldUnblockError(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(UpdateIsBlocked, "", defaultToken, false).Return(errors.New(DefaultErrorMessage))
+func TestDefineDefaultLimit(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
 
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
+	repository.On("FindLimitByToken", defaultToken).Return(defaultTokenLimit, nil)
 
-	timeDuration := calculateBlockTimeDuration(-defaultTimeDuration)
-
-	err := rateLimiter.shouldUnblock(defaultIp, defaultToken, &timeDuration)
-	assert.Error(t, err, ExpectedErrorMessage)
+	assert.Equal(t, defaultTokenLimit, rateLimiter.defineTryLimit(defaultToken))
 }
 
-func TestDefineAmountInLastSecondByIp(t *testing.T) {
-	rateLimiterRepository := NewRateLimiterRepositoryMock()
-	rateLimiterRepository.On(CountByIpInLastSecond, defaultIp).Return(initialIpQuantity, nil)
+func TestDefineTryLimitWhenEmptyToken(t *testing.T) {
+	rateLimiter, _ := startRateLimite()
 
-	rateLimiter := NewRateLimiter(rateLimiterRepository, defaultLimit, defaultTimeDuration)
+	assert.Equal(t, defaultLimit, rateLimiter.defineTryLimit(""))
+}
 
-	amount, err := rateLimiter.defineAmountInLastSecond(defaultIp, "")
-	assert.Nil(t, err)
-	assert.Equal(t, initialIpQuantity, amount)
+func TestDefineTryLimitError(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("FindLimitByToken", defaultToken).Return(0, errors.New(DefaultErrorMessage))
+
+	assert.Equal(t, defaultLimit, rateLimiter.defineTryLimit(defaultToken))
+}
+
+func TestDefineTryLimitNoLimitFound(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("FindLimitByToken", defaultToken).Return(0, nil)
+
+	assert.Equal(t, defaultLimit, rateLimiter.defineTryLimit(defaultToken))
+}
+
+func TestBlockedTokenWhenTokenIsEmpty(t *testing.T) {
+	rateLimiter, _ := startRateLimite()
+
+	assert.Nil(t, rateLimiter.blockedToken("", 0), ExpectedNillMessage)
+}
+
+func TestBlockedTokenWhenFindTryError(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("FindTriesByTokenInLastSecond", defaultToken).Return(0, errors.New(DefaultErrorMessage))
+
+	assert.Error(t, rateLimiter.blockedToken(defaultToken, 0), ExpectedErrorMessage)
+}
+
+func TestBlockedTokenWhenTryLimitExceeded(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("FindTriesByTokenInLastSecond", defaultToken).Return(defaultTokenLimit, nil)
+	repository.On("BlockToken", defaultToken).Return(nil)
+
+	assert.Error(t, rateLimiter.blockedToken(defaultToken, defaultTokenLimit), rateLimitExceeded)
+}
+
+func TestBlockedTokenWhenTryLimitExceededBockedTokenError(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("FindTriesByTokenInLastSecond", defaultToken).Return(defaultTokenLimit, nil)
+	repository.On("BlockToken", defaultToken).Return(errors.New(DefaultErrorMessage))
+
+	assert.Error(t, rateLimiter.blockedToken(defaultToken, defaultTokenLimit), ExpectedErrorMessage)
+}
+
+func TestBlockedTokenWhenTryLimitNotExceeded(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("FindTriesByTokenInLastSecond", defaultToken).Return(initialTryCount, nil)
+
+	assert.Nil(t, rateLimiter.blockedToken(defaultToken, defaultTokenLimit), ExpectedNillMessage)
+}
+
+func TestBlockedIpWhenIpIsEmpty(t *testing.T) {
+	rateLimiter, _ := startRateLimite()
+
+	assert.Error(t, rateLimiter.blockedIp("", 0), ipNotFound)
+}
+
+func TestBlockedIpWhenFindTryError(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("FindTriesByIpInLastSecond", defaultIp).Return(0, errors.New(DefaultErrorMessage))
+
+	assert.Error(t, rateLimiter.blockedIp(defaultIp, 0), ExpectedErrorMessage)
+}
+
+func TestBlockedIpWhenTryLimitExceeded(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("FindTriesByIpInLastSecond", defaultIp).Return(defaultLimit, nil)
+	repository.On("BlockIp", defaultIp).Return(nil)
+
+	assert.Error(t, rateLimiter.blockedIp(defaultIp, defaultLimit), rateLimitExceeded)
+}
+
+func TestBlockedIpWhenTryLimitExceededBockedIpError(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("FindTriesByIpInLastSecond", defaultIp).Return(defaultLimit, nil)
+	repository.On("BlockIp", defaultIp).Return(errors.New(DefaultErrorMessage))
+
+	assert.Error(t, rateLimiter.blockedIp(defaultIp, defaultLimit), ExpectedErrorMessage)
+}
+
+func TestBlockedIpWhenTryLimitNotExceeded(t *testing.T) {
+	rateLimiter, repository := startRateLimite()
+
+	repository.On("FindTriesByIpInLastSecond", defaultIp).Return(initialTryCount, nil)
+
+	assert.Nil(t, rateLimiter.blockedIp(defaultIp, defaultLimit), ExpectedNillMessage)
 }

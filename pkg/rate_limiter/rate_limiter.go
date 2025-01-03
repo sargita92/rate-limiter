@@ -3,7 +3,6 @@ package rate_limiter
 import (
 	"errors"
 	"net/http"
-	"time"
 )
 
 const (
@@ -12,6 +11,7 @@ const (
 	xForwarded   = "X-Forwarded-For"
 
 	ipNotFound        = "ip not found"
+	tokenNotFound     = "token not found"
 	rateLimitExceeded = "you have reached the maximum number of requests or actions allowed within a certain time frame"
 )
 
@@ -36,11 +36,20 @@ func NewRateLimiter(
 
 func (r *RateLimiter) Do(req *http.Request) error {
 	ip := r.defineIp(req)
-	if ip == "" {
-		return errors.New(ipNotFound)
+	token := r.defineToken(req)
+
+	if err := r.checkTokenExists(token); err != nil {
+		if err := r.saveTry(ip, token); err != nil {
+			return err
+		}
+
+		return err
 	}
 
-	token := req.Header.Get(apiKeyHeader)
+	if err := r.saveTry(ip, token); err != nil {
+		return err
+	}
+
 	if err := r.checkIsTokenBlocked(token); err != nil {
 		return err
 	}
@@ -49,8 +58,7 @@ func (r *RateLimiter) Do(req *http.Request) error {
 		return err
 	}
 
-	limit := r.defineTokenLimit(req)
-	if err := r.checkRateLimit(ip, token, limit); err != nil {
+	if err := r.blockedTry(ip, token); err != nil {
 		return err
 	}
 
@@ -71,54 +79,80 @@ func (r *RateLimiter) defineIp(req *http.Request) string {
 	return IPAddress
 }
 
-func (r *RateLimiter) checkIsTokenBlocked(token string) error {
+func (r *RateLimiter) defineToken(req *http.Request) string {
+	return req.Header.Get(apiKeyHeader)
+}
+
+func (r *RateLimiter) checkTokenExists(token string) error {
 	if token == "" {
 		return nil
 	}
 
-	isBlocked, blockedUntil, err := r.rateLimiterRepository.FindIsTokenBlocked(token)
+	exists, err := r.rateLimiterRepository.TokenExists(token)
 	if err != nil {
 		return err
 	}
 
-	if isBlocked {
-		return r.shouldUnblock("", token, blockedUntil)
+	if !exists {
+		return errors.New(tokenNotFound)
 	}
 
 	return nil
 }
 
-func (r *RateLimiter) shouldUnblock(ip string, token string, unblockTime *time.Time) error {
-	if token != "" {
-		ip = ""
-	}
+func (r *RateLimiter) saveTry(ip string, token string) error {
+	return r.rateLimiterRepository.SaveTry(ip, token)
+}
 
-	if time.Now().After(*unblockTime) {
-		if err := r.rateLimiterRepository.UpdateIsBlocked(ip, token, false); err != nil {
-			return err
-		}
-
+func (r *RateLimiter) checkIsTokenBlocked(token string) error {
+	if token == "" {
 		return nil
 	}
 
-	return errors.New(rateLimitExceeded)
-}
-
-func (r *RateLimiter) checkIsIpBlocked(ip string) error {
-	isBlocked, _, err := r.rateLimiterRepository.FindIsIpBlocked(ip)
+	blocked, err := r.rateLimiterRepository.IsBlockedByToken(token)
 	if err != nil {
 		return err
 	}
 
-	if isBlocked {
+	if blocked {
 		return errors.New(rateLimitExceeded)
 	}
 
 	return nil
 }
 
-func (r *RateLimiter) defineTokenLimit(req *http.Request) int {
-	token := req.Header.Get(apiKeyHeader)
+func (r *RateLimiter) checkIsIpBlocked(ip string) error {
+	if ip == "" {
+		return errors.New(ipNotFound)
+	}
+
+	blocked, err := r.rateLimiterRepository.IsBlockedByIp(ip)
+	if err != nil {
+		return err
+	}
+
+	if blocked {
+		return errors.New(rateLimitExceeded)
+	}
+
+	return nil
+}
+
+func (r *RateLimiter) blockedTry(ip string, token string) error {
+	tryLimit := r.defineTryLimit(token)
+
+	if err := r.blockedToken(token, tryLimit); err != nil {
+		return err
+	}
+
+	if err := r.blockedIp(ip, tryLimit); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *RateLimiter) defineTryLimit(token string) int {
 	if token == "" {
 		return r.defineDefaultLimit()
 	}
@@ -139,16 +173,18 @@ func (r *RateLimiter) defineDefaultLimit() int {
 	return r.DefaultLimit
 }
 
-func (r *RateLimiter)
+func (r *RateLimiter) blockedToken(token string, tryLimit int) error {
+	if token == "" {
+		return nil
+	}
 
-func (r *RateLimiter) checkRateLimit(ip string, token string, limit int) error {
-	amount, err := r.defineAmountInLastSecond(ip, token)
+	tries, err := r.rateLimiterRepository.FindTriesByTokenInLastSecond(token)
 	if err != nil {
 		return err
 	}
 
-	if amount > limit {
-		if err := r.rateLimiterRepository.UpdateIsBlocked(ip, token, true); err != nil {
+	if tries >= tryLimit {
+		if err := r.rateLimiterRepository.BlockToken(token); err != nil {
 			return err
 		}
 
@@ -158,14 +194,23 @@ func (r *RateLimiter) checkRateLimit(ip string, token string, limit int) error {
 	return nil
 }
 
-func (r *RateLimiter) defineAmountInLastSecond(ip string, token string) (int, error) {
-	if token != "" {
-		return r.rateLimiterRepository.CountByIpInLastSecond(ip)
+func (r *RateLimiter) blockedIp(ip string, tryLimit int) error {
+	if ip == "" {
+		return errors.New(ipNotFound)
 	}
 
-	return r.rateLimiterRepository.CountByIpInLastSecond(ip)
-}
+	tries, err := r.rateLimiterRepository.FindTriesByIpInLastSecond(ip)
+	if err != nil {
+		return err
+	}
 
-func calculateBlockTimeDuration(durationInSeconds int) time.Time {
-	return time.Now().Add(time.Duration(durationInSeconds) * time.Second)
+	if tries >= tryLimit {
+		if err := r.rateLimiterRepository.BlockIp(ip); err != nil {
+			return err
+		}
+
+		return errors.New(rateLimitExceeded)
+	}
+
+	return nil
 }

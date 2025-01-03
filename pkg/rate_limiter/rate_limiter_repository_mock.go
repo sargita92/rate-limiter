@@ -2,14 +2,11 @@ package rate_limiter
 
 import (
 	"github.com/stretchr/testify/mock"
-	"strconv"
-	"time"
 )
 
 type RateLimiterRepositoryMock struct {
 	mock.Mock
 	countTries int
-	IsBlocked  string
 }
 
 func NewRateLimiterRepositoryMock() *RateLimiterRepositoryMock {
@@ -18,59 +15,61 @@ func NewRateLimiterRepositoryMock() *RateLimiterRepositoryMock {
 	}
 }
 
-func (m *RateLimiterRepositoryMock) CountByIpInLastSecond(ip string) (int, error) {
-	args := m.Called(ip)
-	if m.countTries == 0 {
-		m.countTries = args.Int(0)
+func (r *RateLimiterRepositoryMock) SaveTry(ip string, token string) error {
+	args := r.Called(ip, token)
+	if r.countTries == 0 {
+		r.countTries = args.Int(0)
 	}
 
-	return m.countTries, args.Error(1)
+	r.countTries++
+
+	return args.Error(1)
 }
 
-func (m *RateLimiterRepositoryMock) FindLimitByToken(token string) (int, error) {
-	args := m.Called(token)
+func (r *RateLimiterRepositoryMock) TokenExists(token string) (bool, error) {
+	args := r.Called(token)
+
+	return args.Bool(0), args.Error(1)
+}
+
+func (r *RateLimiterRepositoryMock) IsBlockedByToken(token string) (bool, error) {
+	args := r.Called(token)
+
+	return args.Bool(0), args.Error(1)
+}
+
+func (r *RateLimiterRepositoryMock) IsBlockedByIp(ip string) (bool, error) {
+	args := r.Called(ip)
+
+	return args.Bool(0), args.Error(1)
+}
+
+func (r *RateLimiterRepositoryMock) FindLimitByToken(token string) (int, error) {
+	args := r.Called(token)
 
 	return args.Int(0), args.Error(1)
 }
 
-func (m *RateLimiterRepositoryMock) FindIsTokenBlocked(token string) (bool, *time.Time, error) {
-	args := m.Called(token)
+func (r *RateLimiterRepositoryMock) FindTriesByTokenInLastSecond(token string) (int, error) {
+	args := r.Called(token)
 
-	if m.IsBlocked == "" {
-		m.IsBlocked = strconv.FormatBool(args.Bool(0))
-	}
-
-	IsBlocked, _ := strconv.ParseBool(m.IsBlocked)
-
-	blockedTime, ok := args.Get(1).(time.Time)
-	if !ok {
-		return false, nil, args.Error(2)
-	}
-
-	return IsBlocked, &blockedTime, args.Error(2)
+	return args.Int(0), args.Error(1)
 }
 
-func (m *RateLimiterRepositoryMock) FindIsIpBlocked(ip string) (bool, *time.Time, error) {
-	args := m.Called(ip)
+func (r *RateLimiterRepositoryMock) BlockToken(token string) error {
+	args := r.Called(token)
 
-	if m.IsBlocked == "" {
-		m.IsBlocked = strconv.FormatBool(args.Bool(0))
-	}
-
-	IsBlocked, _ := strconv.ParseBool(m.IsBlocked)
-
-	blockedTime, ok := args.Get(1).(time.Time)
-	if !ok {
-		return false, nil, args.Error(2)
-	}
-
-	return IsBlocked, &blockedTime, args.Error(2)
+	return args.Error(0)
 }
 
-func (m *RateLimiterRepositoryMock) UpdateIsBlocked(ip string, token string, isBlocked bool) error {
-	args := m.Called(ip, token, isBlocked)
+func (r *RateLimiterRepositoryMock) FindTriesByIpInLastSecond(token string) (int, error) {
+	args := r.Called(token)
 
-	m.IsBlocked = strconv.FormatBool(isBlocked)
+	return args.Int(0), args.Error(1)
+}
+
+func (r *RateLimiterRepositoryMock) BlockIp(token string) error {
+	args := r.Called(token)
 
 	return args.Error(0)
 }
